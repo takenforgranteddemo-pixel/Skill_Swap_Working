@@ -1,11 +1,12 @@
-from django.shortcuts import render , redirect 
+from django.shortcuts import render , redirect, get_object_or_404
 from django.http import JsonResponse
 from django.contrib import messages
 from .models import User
-from django.contrib.auth.hashers import check_password
+from django.contrib.auth.hashers import check_password, make_password
 from .models import User, University, Department, Branch
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
+from apps.category_skills.models import SkillsCategory, Skills
 
 def register(request):
     if request.method == "POST":
@@ -145,4 +146,205 @@ def logout_view(request):
     
     messages.success(request, "You have been logged out successfully.")
     return redirect("core:home")
+
+def login_required_custom(view_func):
+    """Custom decorator to check if user is logged in"""
+    def wrapper(request, *args, **kwargs):
+        if 'user_id' not in request.session:
+            messages.error(request, "Please log in to access this page.")
+            return redirect("core:home")
+        return view_func(request, *args, **kwargs)
+    return wrapper
+
+@login_required_custom
+def dashboard(request):
+    """Dashboard view showing user's overview and stats"""
+    user_id = request.session.get('user_id')
+    user = get_object_or_404(User, id=user_id)
+    
+    # Get skill categories for display
+    skill_categories = SkillsCategory.objects.all()[:6]  # Limit to 6 for display
+    
+    # Get some recommended skills (you can implement more sophisticated logic later)
+    recommended_skills = Skills.objects.all()[:3]
+    
+    context = {
+        'custom_user': user,
+        'skill_categories': skill_categories,
+        'recommended_skills': recommended_skills,
+        'enrolled_skills_count': 0,  # Placeholder - implement when enrollment system is ready
+        'completed_courses_count': 0,  # Placeholder - implement when completion tracking is ready
+    }
+    
+    return render(request, 'accounts/dashboard.html', context)
+
+@login_required_custom
+def profile(request):
+    """Profile view showing user's complete information"""
+    user_id = request.session.get('user_id')
+    user = get_object_or_404(User, id=user_id)
+    
+    # Get choices for dropdowns
+    universities = University.objects.all()
+    departments = Department.objects.all()
+    branches = Branch.objects.all()
+    
+    context = {
+        'custom_user': user,
+        'universities': universities,
+        'departments': departments,
+        'branches': branches,
+        'gender_choices': User.GENDER_CHOICES,
+        'year_choices': User.YEAR_CHOICES,
+    }
+    
+    return render(request, 'accounts/profile.html', context)
+
+@login_required_custom
+def update_profile(request):
+    """Update user profile information"""
+    if request.method == "POST" and request.headers.get("x-requested-with") == "XMLHttpRequest":
+        user_id = request.session.get('user_id')
+        user = get_object_or_404(User, id=user_id)
+        
+        data = request.POST
+        errors = {}
+        
+        # Get form data
+        first_name = data.get("first_name", "").strip()
+        last_name = data.get("last_name", "").strip()
+        personal_email = data.get("personal_email", "").strip()
+        gender = data.get("gender", "").strip()
+        year = data.get("year", "").strip()
+        university_id = data.get("university_name")
+        department_id = data.get("department")
+        branch_id = data.get("branch")
+        bio = data.get("bio", "").strip()
+        
+        # Validations
+        if not first_name:
+            errors["first_name"] = "First name is required."
+        if not last_name:
+            errors["last_name"] = "Last name is required."
+            
+        if not personal_email:
+            errors["personal_email"] = "Email is required."
+        else:
+            try:
+                validate_email(personal_email)
+                # Check if email is already taken by another user
+                existing_user = User.objects.filter(personal_email=personal_email).exclude(id=user.id).first()
+                if existing_user:
+                    errors["personal_email"] = "This email is already registered."
+            except ValidationError:
+                errors["personal_email"] = "Enter a valid email address."
+        
+        if not gender:
+            errors["gender"] = "Gender is required."
+        if not year:
+            errors["year"] = "Year is required."
+            
+        if not university_id:
+            errors["university_name"] = "Please select a university."
+        elif not University.objects.filter(id=university_id).exists():
+            errors["university_name"] = "Invalid university selected."
+            
+        if not department_id:
+            errors["department"] = "Please select a department."
+        elif not Department.objects.filter(id=department_id).exists():
+            errors["department"] = "Invalid department selected."
+            
+        if not branch_id:
+            errors["branch"] = "Please select a branch."
+        elif not Branch.objects.filter(id=branch_id).exists():
+            errors["branch"] = "Invalid branch selected."
+            
+        if len(bio) > 250:
+            errors["bio"] = "Bio must be less than 250 characters."
+        
+        # Stop here if errors
+        if errors:
+            return JsonResponse({"success": False, "errors": errors})
+        
+        # Update user
+        try:
+            university = University.objects.get(id=university_id)
+            department = Department.objects.get(id=department_id)
+            branch = Branch.objects.get(id=branch_id)
+            
+            user.first_name = first_name
+            user.last_name = last_name
+            user.personal_email = personal_email
+            user.gender = gender
+            user.year = year
+            user.university_name = university
+            user.department = department
+            user.branch = branch
+            user.bio = bio
+            
+            # Handle profile picture if uploaded
+            if 'profile_pic' in request.FILES:
+                user.profile_pic = request.FILES['profile_pic']
+            
+            user.save()
+            
+            return JsonResponse({"success": True, "message": "Profile updated successfully!"})
+            
+        except Exception as e:
+            return JsonResponse({"success": False, "errors": {"general": "An error occurred while updating your profile."}})
+    
+    return JsonResponse({"success": False, "errors": {"general": "Invalid request."}})
+
+@login_required_custom
+def change_password(request):
+    """Change user password with previous password storage"""
+    if request.method == "POST" and request.headers.get("x-requested-with") == "XMLHttpRequest":
+        user_id = request.session.get('user_id')
+        user = get_object_or_404(User, id=user_id)
+        
+        data = request.POST
+        errors = {}
+        
+        current_password = data.get("current_password", "").strip()
+        new_password = data.get("new_password", "").strip()
+        confirm_password = data.get("confirm_password", "").strip()
+        
+        # Validations
+        if not current_password:
+            errors["current_password"] = "Current password is required."
+        elif not check_password(current_password, user.current_password):
+            errors["current_password"] = "Current password is incorrect."
+            
+        if not new_password:
+            errors["new_password"] = "New password is required."
+        elif len(new_password) < 8:
+            errors["new_password"] = "New password must be at least 8 characters long."
+            
+        if not confirm_password:
+            errors["confirm_password"] = "Please confirm your new password."
+        elif new_password != confirm_password:
+            errors["confirm_password"] = "Passwords do not match."
+        
+        # Check if new password is same as current password
+        if new_password and check_password(new_password, user.current_password):
+            errors["new_password"] = "New password must be different from current password."
+        
+        # Stop here if errors
+        if errors:
+            return JsonResponse({"success": False, "errors": errors})
+        
+        try:
+            # Store current password as previous password (store the raw hash)
+            user.previous_password = user.current_password
+            
+            # Set new password as current password
+            user.current_password = make_password(new_password)
+            user.save()
+            
+            return JsonResponse({"success": True, "message": "Password changed successfully!"})
+            
+        except Exception as e:
+            return JsonResponse({"success": False, "errors": {"general": "An error occurred while changing your password."}})
+    
+    return JsonResponse({"success": False, "errors": {"general": "Invalid request."}})
 
