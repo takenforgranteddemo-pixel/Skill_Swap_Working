@@ -35,7 +35,7 @@ class User(models.Model):
     year = models.CharField(max_length=20,choices=YEAR_CHOICES)
     bio = models.TextField(max_length=250,blank=True,help_text="Tell Others About Yourself")
     current_password = models.CharField(max_length = 128)
-    previous_password = models.CharField(max_length = 25,blank=True,null=True)
+    previous_password = models.CharField(max_length = 128,blank=True,null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
